@@ -3,119 +3,188 @@
 #include <DallasTemperature.h>
 
 // Pin definitions
-#define ONE_WIRE_BUS 2  // DS18B20 on Arduino pin 2
-#define SWITCH_PIN 3    // Switch on pin 3
-#define RELAY_PIN 4     // Relay on pin 4
-#define BUTTON_INC 5    // Increase button on pin 5
-#define BUTTON_DEC 6    // Decrease button on pin 6
-#define BUTTON_START 7  // Start countdown button on pin 7
+const int ONE_WIRE_BUS = A0;
+const int SWITCH_PIN = 5;
+const int RELAY_PIN = 6;
+const int BUTTON_INC = 3;
+const int BUTTON_DEC = 4;
+const int BUTTON_START = 2;
+
+// Constants
+const int READ_TEMP_INTERVAL = 5;
+const int TIME_STEP = 15 * 60;
+const int MAX_TIME = 12 * 60 * 60;
+const int MIN_TIME = 15 * 60;
+const int TEMP_STEP = 5;
+const int MAX_TEMP = 120;
+const int MIN_TEMP = 40;
+const int DEBOUNCE_DELAY = 200;
+const int LCD_COLS = 16;
+const int LCD_ROWS = 2;
+const int LCD_ADDR = 0x27;
 
 // Mode definitions
-#define TEMP_MODE HIGH
-#define TIME_MODE LOW
+enum Mode {
+  TEMP_MODE = LOW,
+  TIME_MODE = HIGH
+};
 
-// Initialize the library with the I2C address 0x27
-LiquidCrystal_I2C lcd(0x27, 16, 2);
-
-// Setup a oneWire instance
+// Libraries
+LiquidCrystal_I2C lcd(LCD_ADDR, LCD_COLS, LCD_ROWS);
 OneWire oneWire(ONE_WIRE_BUS);
-
-// Pass our oneWire reference to Dallas Temperature sensor 
 DallasTemperature sensors(&oneWire);
 
 // Variables
-const int MAX_TIME = 600;
-const int MIN_TIME = 15;
-const int MAX_TEMP = 120;
-const int MIN_TEMP = 40;
-
-int targetTemp = 25;      // Initial target temperature
-int countdownTime = 15;   // Initial countdown time in minutes
-int remainingTime = 0;    // Remaining time
-bool mode = TIME_MODE;    // Initial mode
-unsigned long startTime;  // Timer start
+Mode mode = TIME_MODE;
+unsigned long countdownTime = MIN_TIME;
+unsigned long initialCountdownTime = countdownTime;
+unsigned long remainingTime = 0;
+unsigned long startTime;
 bool timerRunning = false;
+int targetTemp = MIN_TEMP;
+int currentTemp = MIN_TEMP;
 
 void setup() {
-  pinMode(SWITCH_PIN, INPUT);
+  pinMode(SWITCH_PIN, INPUT_PULLUP);
   pinMode(RELAY_PIN, OUTPUT);
-  pinMode(BUTTON_INC, INPUT);
-  pinMode(BUTTON_DEC, INPUT);
-  pinMode(BUTTON_START, INPUT);
+  pinMode(BUTTON_INC, INPUT_PULLUP);
+  pinMode(BUTTON_DEC, INPUT_PULLUP);
+  pinMode(BUTTON_START, INPUT_PULLUP);
+  digitalWrite(RELAY_PIN, HIGH);
 
-  lcd.init();       // initialize the lcd
-  lcd.backlight();  // turn on backlight
-  sensors.begin();  // Start temperature sensor
+  lcd.init();
+  lcd.backlight();
+  sensors.begin();
 }
 
 void loop() {
-  sensors.requestTemperatures();
-  float currentTemp = sensors.getTempCByIndex(0);
+  readTemperature();
+  handleModeSwitch();
+  handleButtons();
+  updateRemainingTime();
+  updateLCD();
+  controlRelay();
+}
 
-  mode = digitalRead(SWITCH_PIN);
-
-  if (digitalRead(BUTTON_INC) == HIGH) {
-    if (mode == TIME_MODE) {
-      countdownTime = min(MAX_TIME, countdownTime + 15);
-    }
-    else {
-      targetTemp = min(MAX_TEMP, targetTemp + 5);
-    }
-    delay(200);  // Debounce delay
-  }
-
-  if (digitalRead(BUTTON_DEC) == HIGH) {
-    if (mode == TIME_MODE) {
-      countdownTime = max(MIN_TIME, countdownTime - 15);
-    }
-    else {
-      targetTemp = max(MIN_TEMP, targetTemp - 5);
-    }
-    delay(200);  // Debounce delay
-  }
-
-  if (digitalRead(BUTTON_START) == HIGH) {
-    startTime = millis();
-    timerRunning = true;
-    remainingTime = countdownTime;
-    delay(200);  // Debounce delay
-  }
-
+void updateRemainingTime() {
   if (timerRunning) {
-    remainingTime = countdownTime - (millis() - startTime) / 60000;
+    remainingTime = initialCountdownTime - (millis() / 1000 - startTime);
     if (remainingTime <= 0) {
       timerRunning = false;
       remainingTime = 0;
     }
   }
+}
 
-  // Update LCD display
-  lcd.setCursor(0, 0);
-  lcd.print("T:");
-  lcd.print(currentTemp);
-  lcd.print("C ");
-  lcd.setCursor(8, 0);
-  lcd.print("Set:");
-  lcd.print(targetTemp);
-  lcd.print("C");
+void readTemperature() {
+  static unsigned long lastTempReadTime = 0;
+  if (millis() - lastTempReadTime > READ_TEMP_INTERVAL * 1000) {
+    sensors.requestTemperatures();
+    currentTemp = (int)sensors.getTempCByIndex(0);
+    lastTempReadTime = millis();
+  }
+}
 
-  lcd.setCursor(0, 1);
-  lcd.print("Time:");
-  lcd.print(remainingTime);
-  lcd.print("m ");
-  lcd.setCursor(8, 1);
-  lcd.print("Set:");
-  lcd.print(countdownTime);
-  lcd.print("m");
+void handleModeSwitch() {
+  mode = (Mode)digitalRead(SWITCH_PIN);
+}
 
-  // Control relay
-  bool tempCondition = currentTemp >= targetTemp;
-  bool timeCondition = !timerRunning;
+void handleButtons() {
+  if (buttonPressed(BUTTON_INC)) handleButtonInc();
+  if (buttonPressed(BUTTON_DEC)) handleButtonDec();
+  if (buttonPressed(BUTTON_START)) handleButtonStart();
+}
 
-  if (tempCondition && timeCondition) {
-    digitalWrite(RELAY_PIN, LOW);  // Turn off relay
+void handleButtonInc() {
+  if (mode == TIME_MODE) {
+    countdownTime = min(MAX_TIME, countdownTime + TIME_STEP);
   }
   else {
-    digitalWrite(RELAY_PIN, HIGH);  // Turn on relay
+    targetTemp = min(MAX_TEMP, targetTemp + TEMP_STEP);
   }
+}
+
+void handleButtonDec() {
+  if (mode == TIME_MODE) {
+    countdownTime = max(MIN_TIME, countdownTime - TIME_STEP);
+  }
+  else {
+    targetTemp = max(MIN_TEMP, targetTemp - TEMP_STEP);
+  }
+}
+
+void handleButtonStart() {
+  initialCountdownTime = countdownTime;
+  startTime = millis() / 1000;
+  timerRunning = true;
+  remainingTime = initialCountdownTime;
+}
+
+void updateLCD() {
+  displayTemperature();
+  displayRemainingTime();
+  displayCountdownTime();
+  displayHeaterStatus();
+}
+
+void displayTemperature() {
+  lcd.setCursor(0, 0);
+  lcd.print(currentTemp);
+  lcd.print('/');
+  lcd.print(targetTemp);
+  lcd.write(0b11011111);
+  lcd.print("C  ");
+}
+
+void displayRemainingTime() {
+  lcd.setCursor(0, 1);
+  if (timerRunning) {
+    const int remainingHours = remainingTime / 3600;
+    const int remainingMinutes = (remainingTime % 3600) / 60;
+    const int remainingSeconds = remainingTime % 60;
+    lcd.print(formatTime(remainingHours));
+    lcd.print(':');
+    lcd.print(formatTime(remainingMinutes));
+    lcd.print(':');
+    lcd.print(formatTime(remainingSeconds));
+  }
+  else {
+    lcd.print("00:00:00");
+  }
+}
+
+void displayCountdownTime() {
+  lcd.setCursor(9, 1);
+  lcd.write(0b01111111);
+  const int hours = countdownTime / 3600;
+  const int minutes = (countdownTime % 3600) / 60;
+  if (hours < 10) lcd.print(' ');
+  lcd.print(hours);
+  lcd.print('h');
+  lcd.print(formatTime(minutes));
+  lcd.print('m');
+}
+
+void displayHeaterStatus() {
+  lcd.setCursor(13, 0);
+  lcd.print(digitalRead(RELAY_PIN) == LOW ? " ON " : "OFF");
+}
+
+String formatTime(int timeValue) {
+  if (timeValue < 10) return "0" + String(timeValue);
+  return String(timeValue);
+}
+
+void controlRelay() {
+  bool tempCondition = currentTemp <= targetTemp;
+  digitalWrite(RELAY_PIN, tempCondition && timerRunning ? LOW : HIGH);
+}
+
+bool buttonPressed(int pin) {
+  static unsigned long lastDebounceTime = 0;
+  if (digitalRead(pin) == LOW && (millis() - lastDebounceTime) > DEBOUNCE_DELAY) {
+    lastDebounceTime = millis();
+    return true;
+  }
+  return false;
 }
